@@ -9,8 +9,10 @@ A Python script that splits Twitter post logs (JSON files) chronologically. It o
 - Divides into multiple files according to file size limits
 - Supports various Twitter export formats
   - Standard Twitter API format
-  - Twitter archive export
+  - Twitter archive export (.json and .js formats)
   - Custom JSON formats
+- Robust encoding detection and handling
+- Nested data structure support
 
 ## Usage
 
@@ -36,6 +38,11 @@ python twitter-log-splitter.py twitter_archive.json output_directory
 python twitter-log-splitter.py twitter_archive.json output_directory 10
 ```
 
+#### Process Twitter export .js file
+```bash
+python twitter-log-splitter.py tweets.js output_directory
+```
+
 ## Output
 The script generates files in the specified output directory with the following format:
 
@@ -52,7 +59,9 @@ This script automatically detects the following datetime formats:
 
 ## Requirements
 - Python 3.6 or higher
-- Uses only standard library (no additional packages needed)
+- Optional dependencies:
+  - `chardet`: For automatic encoding detection (recommended)
+    - Install with: `pip install chardet`
 
 ## License
 Released under the MIT License. See the LICENSE file for details.
@@ -70,8 +79,10 @@ Twitterの投稿ログ（JSONファイル）を時系列順に分割するPython
 - ファイルサイズの制限に従って複数ファイルに分割
 - 様々なTwitterエクスポート形式に対応
   - 標準Twitter APIフォーマット
-  - Twitterアーカイブエクスポート
+  - Twitterアーカイブエクスポート（.jsonと.js形式）
   - カスタムJSON形式
+- 堅牢なエンコーディング検出と処理
+- ネストされたデータ構造のサポート
 
 ## 使用方法
 
@@ -97,6 +108,11 @@ python twitter-log-splitter.py twitter_archive.json output_directory
 python twitter-log-splitter.py twitter_archive.json output_directory 10
 ```
 
+#### Twitterエクスポートの.jsファイルを処理
+```bash
+python twitter-log-splitter.py tweets.js output_directory
+```
+
 ## 出力
 スクリプトは指定された出力ディレクトリに以下の形式でファイルを生成します：
 
@@ -113,7 +129,9 @@ python twitter-log-splitter.py twitter_archive.json output_directory 10
 
 ## 必要環境
 - Python 3.6以上
-- 標準ライブラリのみ使用（追加パッケージ不要）
+- オプションの依存ライブラリ：
+  - `chardet`: エンコーディング自動検出用（推奨）
+    - インストール方法: `pip install chardet`
 
 ## ライセンス
 MITライセンスの下で公開されています。詳細はLICENSEファイルを参照してください。
