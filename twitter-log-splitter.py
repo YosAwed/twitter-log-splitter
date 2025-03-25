@@ -104,13 +104,15 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
                 with open(output_file, 'w', encoding='utf-8') as out:
                     json.dump(current_batch, out, ensure_ascii=False)
                 print(f"{period} パート {file_count} 作成: {len(current_batch)} 投稿, {current_size/1024/1024:.2f} MB")
-                file_count += 1
                 current_batch = []
                 current_size = 2
+                file_count += 1
             
             # 投稿を追加
+            if current_batch:
+                current_size += 1  # カンマのサイズ
             current_batch.append(tweet)
-            current_size += tweet_size + 1  # カンマを含むサイズ
+            current_size += tweet_size
         
         # 残りの投稿を保存
         if current_batch:
@@ -119,6 +121,33 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
                 json.dump(current_batch, out, ensure_ascii=False)
             print(f"{period} パート {file_count} 作成: {len(current_batch)} 投稿, {current_size/1024/1024:.2f} MB")
             file_count += 1
+    
+    print(f"処理完了: {len(tweets)} 投稿を処理しました")
+    return file_count - 1
 
-# 使用例
-split_twitter_log_by_time("twitter_archive.json", "time_sorted_tweets")git add .
+def main():
+    if len(sys.argv) < 3:
+        print(f"使用方法: {sys.argv[0]} <入力ファイル> <出力ディレクトリ> [最大ファイルサイズ(MB)]")
+        sys.exit(1)
+    
+    input_file = sys.argv[1]
+    output_dir = sys.argv[2]
+    
+    max_size_mb = 5  # デフォルト5MB
+    if len(sys.argv) > 3:
+        try:
+            max_size_mb = float(sys.argv[3])
+        except ValueError:
+            print(f"警告: 無効なサイズ指定です。デフォルトの {max_size_mb}MB を使用します。")
+    
+    max_size_bytes = int(max_size_mb * 1024 * 1024)
+    
+    try:
+        file_count = split_twitter_log_by_time(input_file, output_dir, max_size_bytes)
+        print(f"合計 {file_count} ファイルを作成しました")
+    except Exception as e:
+        print(f"エラー: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
