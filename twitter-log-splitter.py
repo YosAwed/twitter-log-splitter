@@ -1,8 +1,18 @@
 import json
 import os
 import sys
+import re
 from datetime import datetime
 import time
+
+# chardetライブラリがインストールされているか確認し、なければ警告を表示
+try:
+    import chardet
+    HAS_CHARDET = True
+except ImportError:
+    HAS_CHARDET = False
+    print("警告: chardetライブラリがインストールされていません。エンコーディング自動検出機能が制限されます。")
+    print("pip install chardet でインストールすることをお勧めします。")
 
 def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024, time_format=None):
     """
@@ -22,24 +32,138 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
     
     # ファイルを開いて構造を確認
     try:
-        with open(input_file, 'r', encoding='utf-8') as f:
+        # 試行するエンコーディングのリスト
+        encodings = ['utf-8', 'utf-8-sig', 'cp932', 'shift_jis', 'euc_jp', 'iso-2022-jp']
+        data = None
+        last_error = None
+        raw_content = None
+        
+        # まずchardetでエンコーディングを自動検出
+        if HAS_CHARDET:
             try:
-                data = json.load(f)
-                print(f"ファイル読み込み完了: {os.path.getsize(input_file)/1024/1024:.2f} MB")
-            except json.JSONDecodeError as e:
-                print(f"JSONデコードエラー: {e}")
-                # 別のエンコーディングを試みる
-                try:
-                    with open(input_file, 'r', encoding='utf-8-sig') as f2:
-                        data = json.load(f2)
-                        print("UTF-8 with BOMエンコーディングで読み込み成功")
-                except Exception:
+                with open(input_file, 'rb') as f_detect:
+                    raw_data = f_detect.read(1024*1024)  # 最初の1MBを読み込み
+                    result = chardet.detect(raw_data)
+                    detected_encoding = result['encoding']
+                    confidence = result['confidence']
+                    if detected_encoding and confidence > 0.7:
+                        print(f"検出されたエンコーディング: {detected_encoding} (信頼度: {confidence:.2f})")
+                        if detected_encoding.lower() not in [e.lower() for e in encodings]:
+                            encodings.insert(0, detected_encoding)
+            except Exception as e:
+                print(f"エンコーディング自動検出中にエラーが発生しました: {e}")
+        
+        # 入力ファイルが.jsファイルかどうかを確認
+        is_js_file = input_file.lower().endswith('.js')
+        
+        # 各エンコーディングを試行
+        for encoding in encodings:
+            try:
+                # ファイルを読み込み
+                with open(input_file, 'r', encoding=encoding) as f:
+                    raw_content = f.read()
+                    
+                    # .jsファイルの場合、JavaScript変数宣言部分を削除
+                    if is_js_file:
+                        # JavaScript変数宣言部分を削除（window.YTD.tweets.part0 = ...）
+                        js_var_pattern = r'^\s*window\.YTD\.[^=]+=\s*'
+                        match = re.search(js_var_pattern, raw_content)
+                        if match:
+                            # 変数宣言部分を削除してJSON配列部分を抽出
+                            print(f"Twitter投稿ログ（JavaScript形式）を処理中...（変数宣言部分を削除）")
+                            json_start = match.end()
+                            # 最初の'['を探す
+                            bracket_pos = raw_content.find('[', json_start)
+                            if bracket_pos != -1:
+                                # '['から始まる部分を抽出
+                                raw_content = raw_content[bracket_pos:].strip()
+                                # 最後の';'を削除
+                                if raw_content.endswith(';'):
+                                    raw_content = raw_content[:-1]
+                    
+                    # JSONとしてパース
                     try:
-                        with open(input_file, 'r', encoding='cp932') as f3:
-                            data = json.load(f3)
-                            print("CP932エンコーディングで読み込み成功")
-                    except Exception as e2:
-                        raise ValueError(f"ファイルを読み込めませんでした。エンコーディングエラー: {e2}")
+                        data = json.loads(raw_content)
+                        print(f"ファイル読み込み完了: {os.path.getsize(input_file)/1024/1024:.2f} MB (エンコーディング: {encoding})")
+                        break  # 成功したらループを抜ける
+                    except json.JSONDecodeError as json_err:
+                        last_error = json_err
+                        print(f"{encoding}エンコーディングでJSONデコードエラー: {json_err}")
+            except Exception as e:
+                last_error = e
+                print(f"{encoding}エンコーディングで読み込み失敗: {e}")
+        
+        # すべてのエンコーディングが失敗した場合、バイナリモードで読み込みを試行
+        if data is None and raw_content is not None:
+            # JavaScript形式の場合、別の方法でJSON部分を抽出
+            if is_js_file:
+                try:
+                    # ブラケット内を抽出
+                    print("別の方法でJavaScript形式のJSON部分を抽出中...")
+                    # 最初の'['と最後の']'を探す
+                    bracket_start = raw_content.find('[')
+                    bracket_end = raw_content.rfind(']')
+                    
+                    if bracket_start != -1 and bracket_end != -1 and bracket_end > bracket_start:
+                        json_content = raw_content[bracket_start:bracket_end+1]
+                        try:
+                            data = json.loads(json_content)
+                            print("ブラケット内を抽出してJSONとしてパース成功")
+                        except json.JSONDecodeError:
+                            # 別の方法を試す
+                            pass
+                except Exception as e:
+                    print(f"別の方法でJSON抽出中にエラーが発生しました: {e}")
+        
+        # それでも失敗した場合、バイナリモードで読み込みを試行
+        if data is None:
+            try:
+                with open(input_file, 'rb') as f_bin:
+                    raw_data = f_bin.read()
+                    # BOMを確認
+                    if raw_data.startswith(b'\xef\xbb\xbf'):  # UTF-8 with BOM
+                        raw_data = raw_data[3:]
+                    
+                    # .jsファイルの場合、JavaScript変数宣言部分を削除
+                    if is_js_file:
+                        # バイナリデータをテキストにデコード
+                        for encoding in ['utf-8', 'cp932', 'shift_jis', 'euc_jp']:
+                            try:
+                                text_data = raw_data.decode(encoding)
+                                # ブラケット内を抽出
+                                bracket_start = text_data.find('[')
+                                bracket_end = text_data.rfind(']')
+                                
+                                if bracket_start != -1 and bracket_end != -1 and bracket_end > bracket_start:
+                                    json_content = text_data[bracket_start:bracket_end+1]
+                                    try:
+                                        data = json.loads(json_content)
+                                        print(f"バイナリモードで読み込み成功: {encoding}")
+                                        break
+                                    except json.JSONDecodeError:
+                                        continue
+                            except UnicodeDecodeError:
+                                continue
+                    else:
+                        # 通常のJSONファイルの場合
+                        try:
+                            # 様々なエンコーディングでデコードを試行
+                            for encoding in ['utf-8', 'cp932', 'shift_jis', 'euc_jp']:
+                                try:
+                                    decoded_data = raw_data.decode(encoding)
+                                    data = json.loads(decoded_data)
+                                    print(f"バイナリモードで読み込み成功: {encoding}")
+                                    break
+                                except (UnicodeDecodeError, json.JSONDecodeError):
+                                    continue
+                        except Exception as e:
+                            last_error = e
+            except Exception as e:
+                last_error = e
+        
+        # それでも失敗した場合、エラーを発生
+        if data is None:
+            raise ValueError(f"ファイルを読み込めませんでした。すべてのエンコーディングが失敗しました。最後のエラー: {last_error}")
     except FileNotFoundError:
         raise FileNotFoundError(f"ファイルが見つかりません: {input_file}")
     except PermissionError:
@@ -48,13 +172,32 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
     # Twitterログの主要な構造を特定
     tweets = []
     if isinstance(data, list):
-        tweets = data  # データが直接投稿の配列である場合
+        # データが直接投稿の配列である場合
+        # Twitterエクスポートデータの場合、各要素が {"tweet": {...}} 形式になっている
+        if len(data) > 0 and isinstance(data[0], dict):
+            if 'tweet' in data[0]:
+                # {"tweet": {...}} 形式の場合、tweet内のデータを使用
+                print("Twitterエクスポート形式（{\"tweet\": {...}}）を検出しました")
+                tweets = [item['tweet'] for item in data if 'tweet' in item]
+            else:
+                tweets = data  # 通常の配列形式
+        else:
+            tweets = data
     elif isinstance(data, dict):
         # 一般的なTwitterエクスポート形式を検索
         for key in ['tweet', 'tweets', 'data']:
             if key in data and isinstance(data[key], list):
                 tweets = data[key]
                 break
+        
+        # さらに深い階層も検索
+        if not tweets and 'data' in data:
+            data_obj = data['data']
+            if isinstance(data_obj, dict):
+                for key in ['tweet', 'tweets']:
+                    if key in data_obj and isinstance(data_obj[key], list):
+                        tweets = data_obj[key]
+                        break
     
     if not tweets:
         raise ValueError("入力ファイル内にTwitter投稿の配列が見つかりません")
@@ -70,10 +213,63 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
     date_keys = ['created_at', 'timestamp', 'time', 'date']
     date_key = None
     
+    # まず直接のキーを確認
     for key in date_keys:
         if tweets and key in tweets[0]:
             date_key = key
             break
+    
+    # ネストされた構造も確認
+    if not date_key:
+        # ネストされた構造を探索する関数
+        def find_nested_key(obj, target_keys, path=""):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    new_path = f"{path}.{k}" if path else k
+                    if k in target_keys:
+                        return k, new_path, v
+                    if isinstance(v, (dict, list)):
+                        result = find_nested_key(v, target_keys, new_path)
+                        if result:
+                            return result
+            elif isinstance(obj, list) and obj:
+                return find_nested_key(obj[0], target_keys, f"{path}[0]")
+            return None
+        
+        # ネストされたキーを検索
+        nested_result = find_nested_key(tweets[0], date_keys)
+        if nested_result:
+            key_name, full_path, value = nested_result
+            print(f"ネストされた日時情報を検出しました: {full_path} = {value}")
+            
+            # ネストされたキーへのアクセス関数を定義
+            def get_nested_value(obj, path):
+                parts = path.split('.')
+                current = obj
+                for part in parts:
+                    if part.endswith(']'):
+                        # リスト要素へのアクセス（例: items[0]）
+                        list_name, idx = part[:-1].split('[')  
+                        current = current[list_name][int(idx)]
+                    else:
+                        current = current[part]
+                return current
+            
+            # 元の日時キーとパスを保存
+            date_key = key_name
+            date_key_path = full_path
+            
+            # 元のツイートオブジェクトを変更せずに日時情報を取得するラムダ関数を定義
+            original_tweets = tweets
+            date_key_parts = date_key_path.split('.')
+            if len(date_key_parts) > 1:
+                # ネストされた場合は、最初の部分がキー名
+                date_container_key = date_key_parts[0]
+                # ラムダ関数を使用してネストされた値を取得
+                get_date_value = lambda x: get_nested_value(x, date_key_path[len(date_container_key)+1:])
+            else:
+                # ネストされていない場合は直接アクセス
+                get_date_value = lambda x: x[date_key]
     
     if not date_key:
         raise ValueError("投稿内に日時情報が見つかりません")
@@ -101,7 +297,11 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
     # 投稿を日時でソート
     print("ツイートを時系列順にソート中...")
     try:
-        tweets.sort(key=lambda x: parse_date(x[date_key]))
+        # ネストされた日時情報がある場合は、get_date_value関数を使用
+        if 'get_date_value' in locals():
+            tweets.sort(key=lambda x: parse_date(get_date_value(x)))
+        else:
+            tweets.sort(key=lambda x: parse_date(x[date_key]))
         print("ソート完了")
     except Exception as e:
         print(f"警告: 時系列順のソートに失敗しました: {e}")
@@ -115,14 +315,19 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
             print(f"進捗: {i}/{len(tweets)} ツイート処理中... ({i/len(tweets)*100:.1f}%)")
             
         try:
-            dt = parse_date(tweet[date_key])
+            # ネストされた日時情報がある場合は、get_date_value関数を使用
+            if 'get_date_value' in locals():
+                dt = parse_date(get_date_value(tweet))
+            else:
+                dt = parse_date(tweet[date_key])
             # 年月をキーとして使用
             key = dt.strftime('%Y-%m')
             if key not in grouped_tweets:
                 grouped_tweets[key] = []
             grouped_tweets[key].append(tweet)
         except Exception as e:
-            print(f"警告: 日時パースエラー {tweet[date_key]}: {e}")
+            date_value = get_date_value(tweet) if 'get_date_value' in locals() else tweet.get(date_key, 'キーなし')
+            print(f"警告: 日時パースエラー {date_value}: {e}")
     
     print(f"グループ化完了: {len(grouped_tweets)} 期間に分類")
     
