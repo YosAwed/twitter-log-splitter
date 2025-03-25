@@ -16,7 +16,6 @@ Twitterの投稿ログ（JSONファイル）を時系列順に分割するPython
 
 コマンドラインから以下のように実行します：
 
-```bash
 python twitter-log-splitter.py <入力ファイル> <出力ディレクトリ> [最大ファイルサイズ(MB)]
 引数
 <入力ファイル>: 入力JSONファイルのパス（必須）
@@ -24,12 +23,16 @@ python twitter-log-splitter.py <入力ファイル> <出力ディレクトリ> [
 [最大ファイルサイズ(MB)]: 各出力ファイルの最大サイズ（MB単位、オプション、デフォルト: 5MB）
 
 例
-# 基本的な使用法
+## 基本的な使用法
+```bash
 python twitter-log-splitter.py twitter_archive.json output_directory
-
-# ファイルサイズを10MBに指定
+```
+ファイルサイズを10MBに指定
+```bash
 python twitter-log-splitter.py twitter_archive.json output_directory 10
-出力
+```
+
+## 出力
 スクリプトは指定された出力ディレクトリに以下の形式でファイルを生成します：
 
 YYYY-MM_part_N.json
@@ -41,9 +44,11 @@ N: パート番号
 Twitter API形式: %a %b %d %H:%M:%S +0000 %Y
 ISO形式: %Y-%m-%dT%H:%M:%S.%fZ
 標準形式: %Y-%m-%d %H:%M:%S
-必要環境
+
+## 必要環境
 Python 3.6以上
 標準ライブラリのみ使用（追加パッケージ不要）
-ライセンス
+
+## ライセンス
 MITライセンスの下で公開されています。詳細はLICENSEファイルを参照してください。
  
