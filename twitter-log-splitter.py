@@ -14,7 +14,7 @@ except ImportError:
     print("警告: chardetライブラリがインストールされていません。エンコーディング自動検出機能が制限されます。")
     print("pip install chardet でインストールすることをお勧めします。")
 
-def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024, time_format=None):
+def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024, time_format=None, text_only=False):
     """
     Twitter投稿ログを時系列順に分割する関数
     
@@ -23,6 +23,7 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
     - output_dir: 出力ディレクトリのパス
     - max_size_bytes: 各出力ファイルの最大サイズ（バイト）
     - time_format: 日時情報のフォーマット（Noneの場合は自動検出）
+    - text_only: Trueの場合、ツイートのテキストのみを抽出
     """
     # 開始時間を記録
     start_time = time.time()
@@ -350,11 +351,27 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
             # サイズ超過チェック
             if current_size + tweet_size + 1 > max_size_bytes and current_batch:
                 # 現在のバッチを保存
-                output_file = os.path.join(output_dir, f"{period}_part_{file_count}.json")
-                with open(output_file, 'w', encoding='utf-8') as out:
-                    json.dump(current_batch, out, ensure_ascii=False, indent=None)
+                # ファイル名の生成とファイル存在確認
+                output_filename = f"{period}_part_{file_count}.txt"
+                output_path = os.path.join(output_dir, output_filename)
                 
-                actual_size = os.path.getsize(output_file)
+                # 同名ファイルが存在する場合、数字を付加して重複を避ける
+                counter = 1
+                while os.path.exists(output_path):
+                    output_filename = f"{period}_part_{file_count}_{counter}.txt"
+                    output_path = os.path.join(output_dir, output_filename)
+                    counter += 1
+                
+                with open(output_path, 'w', encoding='utf-8') as out:
+                    if text_only:
+                        # ツイートをプレーンテキストで保存
+                        for tweet in current_batch:
+                            if 'text' in tweet:
+                                out.write(tweet['text'] + '\n')
+                    else:
+                        json.dump(current_batch, out, ensure_ascii=False, indent=None)
+                
+                actual_size = os.path.getsize(output_path)
                 print(f"{period} パート {file_count} 作成: {len(current_batch)} 投稿, {actual_size/1024/1024:.2f} MB")
                 
                 total_processed += len(current_batch)
@@ -370,11 +387,27 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
         
         # 残りの投稿を保存
         if current_batch:
-            output_file = os.path.join(output_dir, f"{period}_part_{file_count}.json")
-            with open(output_file, 'w', encoding='utf-8') as out:
-                json.dump(current_batch, out, ensure_ascii=False, indent=None)
+            # ファイル名の生成とファイル存在確認
+            output_filename = f"{period}_part_{file_count}.txt"
+            output_path = os.path.join(output_dir, output_filename)
             
-            actual_size = os.path.getsize(output_file)
+            # 同名ファイルが存在する場合、数字を付加して重複を避ける
+            counter = 1
+            while os.path.exists(output_path):
+                output_filename = f"{period}_part_{file_count}_{counter}.txt"
+                output_path = os.path.join(output_dir, output_filename)
+                counter += 1
+            
+            with open(output_path, 'w', encoding='utf-8') as out:
+                if text_only:
+                    # ツイートをプレーンテキストで保存
+                    for tweet in current_batch:
+                        if 'text' in tweet:
+                            out.write(tweet['text'] + '\n')
+                else:
+                    json.dump(current_batch, out, ensure_ascii=False, indent=None)
+            
+            actual_size = os.path.getsize(output_path)
             print(f"{period} パート {file_count} 作成: {len(current_batch)} 投稿, {actual_size/1024/1024:.2f} MB")
             
             total_processed += len(current_batch)
@@ -389,24 +422,35 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
 
 def main():
     if len(sys.argv) < 3:
-        print(f"使用方法: {sys.argv[0]} <入力ファイル> <出力ディレクトリ> [最大ファイルサイズ(MB)]")
+        print(f"使用方法: {sys.argv[0]} <入力ファイル> <出力ディレクトリ> [最大ファイルサイズ(MB)] [--text-only]")
+        print("オプション:")
+        print("  --text-only: ツイートのテキスト部分のみを抽出して保存")
         sys.exit(1)
     
     input_file = sys.argv[1]
     output_dir = sys.argv[2]
     
     max_size_mb = 5  # デフォルト5MB
-    if len(sys.argv) > 3:
-        try:
-            max_size_mb = float(sys.argv[3])
-        except ValueError:
-            print(f"警告: 無効なサイズ指定です。デフォルトの {max_size_mb}MB を使用します。")
+    text_only = False
+    
+    # 残りの引数を処理
+    for i in range(3, len(sys.argv)):
+        arg = sys.argv[i]
+        if arg == "--text-only":
+            text_only = True
+        elif i == 3 and not arg.startswith("--"):  # 3番目の引数がオプションでなければサイズと解釈
+            try:
+                max_size_mb = float(arg)
+            except ValueError:
+                print(f"警告: 無効なサイズ指定です。デフォルトの {max_size_mb}MB を使用します。")
     
     max_size_bytes = int(max_size_mb * 1024 * 1024)
     
     try:
-        file_count = split_twitter_log_by_time(input_file, output_dir, max_size_bytes)
+        file_count = split_twitter_log_by_time(input_file, output_dir, max_size_bytes, text_only=text_only)
         print(f"合計 {file_count} ファイルを作成しました")
+        if text_only:
+            print("テキスト抽出モード: ツイートのテキスト部分のみが保存されました")
     except Exception as e:
         print(f"エラー: {e}")
         sys.exit(1)
