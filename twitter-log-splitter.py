@@ -72,7 +72,7 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
                         match = re.search(js_var_pattern, raw_content)
                         if match:
                             # 変数宣言部分を削除してJSON配列部分を抽出
-                            print(f"Twitter投稿ログ（JavaScript形式）を処理中...（変数宣言部分を削除）")
+                            print("Twitter投稿ログ（JavaScript形式）を処理中...（変数宣言部分を削除）")
                             json_start = match.end()
                             # 最初の'['を探す
                             bracket_pos = raw_content.find('[', json_start)
@@ -374,8 +374,24 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
                     if text_only:
                         # ツイートをプレーンテキストで保存
                         for tweet in current_batch:
-                            if 'text' in tweet:
-                                out.write(tweet['text'] + '\n')
+                            # ツイートデータを取得
+                            tweet_data = tweet
+                            # {"tweet": {...}} 形式の場合、tweet内のデータを使用
+                            if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
+                                tweet_data = tweet['tweet']
+                            
+                            # full_textフィールドを優先的に使用し、なければtextフィールドを使用
+                            text_content = None
+                            if 'full_text' in tweet_data:
+                                text_content = tweet_data['full_text']
+                            elif 'text' in tweet_data:
+                                text_content = tweet_data['text']
+                            
+                            if text_content:
+                                # 改行文字をスペースに置換し、連続するスペースを削除
+                                text_content = text_content.replace('\n', ' ').replace('\r', ' ')
+                                text_content = ' '.join(text_content.split())
+                                out.write(text_content + '\n')
                     else:
                         json.dump(current_batch, out, ensure_ascii=False, indent=None)
                 
@@ -410,8 +426,24 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
                 if text_only:
                     # ツイートをプレーンテキストで保存
                     for tweet in current_batch:
-                        if 'text' in tweet:
-                            out.write(tweet['text'] + '\n')
+                        # ツイートデータを取得
+                        tweet_data = tweet
+                        # {"tweet": {...}} 形式の場合、tweet内のデータを使用
+                        if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
+                            tweet_data = tweet['tweet']
+                        
+                        # full_textフィールドを優先的に使用し、なければtextフィールドを使用
+                        text_content = None
+                        if 'full_text' in tweet_data:
+                            text_content = tweet_data['full_text']
+                        elif 'text' in tweet_data:
+                            text_content = tweet_data['text']
+                        
+                        if text_content:
+                            # 改行文字をスペースに置換し、連続するスペースを削除
+                            text_content = text_content.replace('\n', ' ').replace('\r', ' ')
+                            text_content = ' '.join(text_content.split())
+                            out.write(text_content + '\n')
                 else:
                     json.dump(current_batch, out, ensure_ascii=False, indent=None)
             
