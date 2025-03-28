@@ -4,6 +4,7 @@ import sys
 import re
 from datetime import datetime
 import time
+import unicodedata  # Unicode正規化のためのモジュールを追加
 
 # chardetライブラリがインストールされているか確認し、なければ警告を表示
 try:
@@ -162,6 +163,7 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
                             last_error = e
             except Exception as e:
                 last_error = e
+                print(f"バイナリモードでの読み込みに失敗しました: {e}")
         
         # それでも失敗した場合、エラーを発生
         if data is None:
@@ -345,6 +347,86 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
     total_processed = 0
     
     print("ファイル分割処理を開始...")
+    
+    # テキストモードで「all」グループ化の場合は、ツイート数ベースで分割
+    if text_only and group_by == 'all' and 'all_tweets' in grouped_tweets:
+        all_tweets = grouped_tweets['all_tweets']
+        print(f"期間 all_tweets の処理中... ({len(all_tweets)} ツイート)")
+        
+        # テキストを抽出して一つのリストに格納
+        all_text_content = []
+        for i, tweet in enumerate(all_tweets):
+            # 進捗表示（10%ごと）
+            if i % max(1, len(all_tweets) // 10) == 0:
+                print(f"進捗: {i}/{len(all_tweets)} テキスト抽出中... ({i/len(all_tweets)*100:.1f}%)")
+            
+            # ツイートデータを取得
+            tweet_data = tweet
+            # {"tweet": {...}} 形式の場合、tweet内のデータを使用
+            if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
+                tweet_data = tweet['tweet']
+            
+            # full_textフィールドを優先的に使用し、なければtextフィールドを使用
+            text_content = None
+            if 'full_text' in tweet_data:
+                text_content = tweet_data['full_text']
+            elif 'text' in tweet_data:
+                text_content = tweet_data['text']
+            
+            if text_content:
+                try:
+                    # Unicode正規化を追加
+                    text_content = unicodedata.normalize('NFKC', text_content)
+                    # 改行文字をスペースに置換し、連続するスペースを削除
+                    text_content = text_content.replace('\n', ' ').replace('\r', ' ')
+                    text_content = ' '.join(text_content.split())
+                    # 制御文字を削除（一部の制御文字はファイル書き込みで問題を起こす可能性がある）
+                    text_content = ''.join(ch for ch in text_content if unicodedata.category(ch)[0] != 'C' or ch in (' ', '\t', '\n'))
+                    # 絵文字を削除
+                    text_content = remove_emojis(text_content)
+                    all_text_content.append(text_content)
+                except Exception as e:
+                    print(f"警告: テキスト処理中にエラーが発生: {e}")
+        
+        # 一つのファイルに格納するツイート数（ファイル数を減らすため大きな値に設定）
+        tweets_per_file = 10000
+        
+        # ツイートを分割してファイルに保存
+        for i in range(0, len(all_text_content), tweets_per_file):
+            # 現在のバッチを取得
+            batch = all_text_content[i:i+tweets_per_file]
+            
+            # ファイル名の生成
+            output_filename = f"all_tweets_part_{file_count}.txt"
+            output_path = os.path.join(output_dir, output_filename)
+            
+            # 同名ファイルが存在する場合、数字を付加して重複を避ける
+            counter = 1
+            while os.path.exists(output_path):
+                output_filename = f"all_tweets_part_{file_count}_{counter}.txt"
+                output_path = os.path.join(output_dir, output_filename)
+                counter += 1
+            
+            # テキストを結合して一度に書き込み
+            combined_text = '\n'.join(batch)
+            write_success = write_to_file(output_path, combined_text + '\n', is_text=True)
+            if not write_success:
+                print(f"警告: {output_path} への書き込みに失敗しました")
+            
+            actual_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+            print(f"all_tweets パート {file_count} 作成: {len(batch)} 投稿, {actual_size/1024/1024:.2f} MB")
+            
+            total_processed += len(batch)
+            file_count += 1
+        
+        # 処理時間を計算
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        
+        print(f"処理完了: {len(all_tweets)} ツイートを処理しました (処理時間: {elapsed_time:.2f}秒)")
+        return file_count - 1
+    
+    # 通常の処理（テキストモードでallグループ化以外の場合）
     for period, period_tweets in sorted(grouped_tweets.items()):
         print(f"期間 {period} の処理中... ({len(period_tweets)} ツイート)")
         current_batch = []
@@ -370,32 +452,50 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
                     output_path = os.path.join(output_dir, output_filename)
                     counter += 1
                 
-                with open(output_path, 'w', encoding='utf-8') as out:
-                    if text_only:
-                        # ツイートをプレーンテキストで保存
-                        for tweet in current_batch:
-                            # ツイートデータを取得
-                            tweet_data = tweet
-                            # {"tweet": {...}} 形式の場合、tweet内のデータを使用
-                            if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
-                                tweet_data = tweet['tweet']
-                            
-                            # full_textフィールドを優先的に使用し、なければtextフィールドを使用
-                            text_content = None
-                            if 'full_text' in tweet_data:
-                                text_content = tweet_data['full_text']
-                            elif 'text' in tweet_data:
-                                text_content = tweet_data['text']
-                            
-                            if text_content:
+                if text_only:
+                    # テキストモードでの保存処理
+                    all_text_content = []
+                    for tweet in current_batch:
+                        # ツイートデータを取得
+                        tweet_data = tweet
+                        # {"tweet": {...}} 形式の場合、tweet内のデータを使用
+                        if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
+                            tweet_data = tweet['tweet']
+                        
+                        # full_textフィールドを優先的に使用し、なければtextフィールドを使用
+                        text_content = None
+                        if 'full_text' in tweet_data:
+                            text_content = tweet_data['full_text']
+                        elif 'text' in tweet_data:
+                            text_content = tweet_data['text']
+                        
+                        if text_content:
+                            try:
+                                # Unicode正規化を追加
+                                text_content = unicodedata.normalize('NFKC', text_content)
                                 # 改行文字をスペースに置換し、連続するスペースを削除
                                 text_content = text_content.replace('\n', ' ').replace('\r', ' ')
                                 text_content = ' '.join(text_content.split())
-                                out.write(text_content + '\n')
-                    else:
-                        json.dump(current_batch, out, ensure_ascii=False, indent=None)
+                                # 制御文字を削除（一部の制御文字はファイル書き込みで問題を起こす可能性がある）
+                                text_content = ''.join(ch for ch in text_content if unicodedata.category(ch)[0] != 'C' or ch in (' ', '\t', '\n'))
+                                # 顔文字を削除
+                                text_content = remove_emojis(text_content)
+                                all_text_content.append(text_content)
+                            except Exception as e:
+                                print(f"警告: テキスト処理中にエラーが発生: {e}")
+                    
+                    # 全テキストを結合して一度に書き込み
+                    combined_text = '\n'.join(all_text_content)
+                    write_success = write_to_file(output_path, combined_text + '\n', is_text=True)
+                    if not write_success:
+                        print(f"警告: {output_path} への書き込みに失敗しました")
+                else:
+                    # JSONモードでの保存処理
+                    write_success = write_to_file(output_path, current_batch, is_text=False)
+                    if not write_success:
+                        print(f"警告: {output_path} への書き込みに失敗しました")
                 
-                actual_size = os.path.getsize(output_path)
+                actual_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
                 print(f"{period} パート {file_count} 作成: {len(current_batch)} 投稿, {actual_size/1024/1024:.2f} MB")
                 
                 total_processed += len(current_batch)
@@ -422,32 +522,50 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
                 output_path = os.path.join(output_dir, output_filename)
                 counter += 1
             
-            with open(output_path, 'w', encoding='utf-8') as out:
-                if text_only:
-                    # ツイートをプレーンテキストで保存
-                    for tweet in current_batch:
-                        # ツイートデータを取得
-                        tweet_data = tweet
-                        # {"tweet": {...}} 形式の場合、tweet内のデータを使用
-                        if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
-                            tweet_data = tweet['tweet']
-                        
-                        # full_textフィールドを優先的に使用し、なければtextフィールドを使用
-                        text_content = None
-                        if 'full_text' in tweet_data:
-                            text_content = tweet_data['full_text']
-                        elif 'text' in tweet_data:
-                            text_content = tweet_data['text']
-                        
-                        if text_content:
+            if text_only:
+                # テキストモードでの保存処理
+                all_text_content = []
+                for tweet in current_batch:
+                    # ツイートデータを取得
+                    tweet_data = tweet
+                    # {"tweet": {...}} 形式の場合、tweet内のデータを使用
+                    if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
+                        tweet_data = tweet['tweet']
+                    
+                    # full_textフィールドを優先的に使用し、なければtextフィールドを使用
+                    text_content = None
+                    if 'full_text' in tweet_data:
+                        text_content = tweet_data['full_text']
+                    elif 'text' in tweet_data:
+                        text_content = tweet_data['text']
+                    
+                    if text_content:
+                        try:
+                            # Unicode正規化を追加
+                            text_content = unicodedata.normalize('NFKC', text_content)
                             # 改行文字をスペースに置換し、連続するスペースを削除
                             text_content = text_content.replace('\n', ' ').replace('\r', ' ')
                             text_content = ' '.join(text_content.split())
-                            out.write(text_content + '\n')
-                else:
-                    json.dump(current_batch, out, ensure_ascii=False, indent=None)
+                            # 制御文字を削除（一部の制御文字はファイル書き込みで問題を起こす可能性がある）
+                            text_content = ''.join(ch for ch in text_content if unicodedata.category(ch)[0] != 'C' or ch in (' ', '\t', '\n'))
+                            # 顔文字を削除
+                            text_content = remove_emojis(text_content)
+                            all_text_content.append(text_content)
+                        except Exception as e:
+                            print(f"警告: テキスト処理中にエラーが発生: {e}")
+                
+                # 全テキストを結合して一度に書き込み
+                combined_text = '\n'.join(all_text_content)
+                write_success = write_to_file(output_path, combined_text + '\n', is_text=True)
+                if not write_success:
+                    print(f"警告: {output_path} への書き込みに失敗しました")
+            else:
+                # JSONモードでの保存処理
+                write_success = write_to_file(output_path, current_batch, is_text=False)
+                if not write_success:
+                    print(f"警告: {output_path} への書き込みに失敗しました")
             
-            actual_size = os.path.getsize(output_path)
+            actual_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
             print(f"{period} パート {file_count} 作成: {len(current_batch)} 投稿, {actual_size/1024/1024:.2f} MB")
             
             total_processed += len(current_batch)
@@ -459,6 +577,143 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
     
     print(f"処理完了: {len(tweets)} ツイートを処理しました (処理時間: {elapsed_time:.2f}秒)")
     return file_count - 1
+
+# 顔文字を削除する関数
+def remove_emojis(text):
+    """
+    顔文字を削除する関数
+    
+    Parameters:
+    - text: 顔文字を含むテキスト
+    
+    Returns:
+    - 顔文字を削除したテキスト
+    """
+    # 顔文字を削除するための正規表現パターン
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # 顔文字: 笑顔
+        "\U0001F300-\U0001F5FF"  # 顔文字: その他
+        "\U0001F680-\U0001F6FF"  # 顔文字: 交通機関
+        "\U0001F700-\U0001F77F"  # 顔文字: その他
+        "\U0001F780-\U0001F7FF"  # 顔文字: その他
+        "\U0001F800-\U0001F8FF"  # 顔文字: その他
+        "\U0001F900-\U0001F9FF"  # 顔文字: その他
+        "\U0001FA00-\U0001FA6F"  # 顔文字: その他
+        "\U0001FA70-\U0001FAFF"  # 顔文字: その他
+        "\U00002702-\U000027B0"  # 顔文字: Dingbats
+        "\U000024C2-\U0000257F"  # 顔文字: その他
+        "\U00002600-\U000026FF"  # 顔文字: その他
+        "\U00002700-\U000027BF"  # 顔文字: Dingbats
+        "\U0000FE00-\U0000FE0F"  # 顔文字: その他
+        "\U0001F000-\U0001F02F"  # 顔文字: その他
+        "\U0001F0A0-\U0001F0FF"  # 顔文字: トランプ
+        "\U0001F100-\U0001F1FF"  # 顔文字: その他
+        "\U0001F200-\U0001F2FF"  # 顔文字: その他
+        "\U0001F300-\U0001F5FF"  # 顔文字: その他
+        "\U0001F600-\U0001F64F"  # 顔文字: 笑顔
+        "\U0001F680-\U0001F6FF"  # 顔文字: 交通機関
+        "\U0001F700-\U0001F77F"  # 顔文字: その他
+        "\U000020D0-\U000020FF"  # 顔文字: その他
+        "\U0000FE00-\U0000FE0F"  # 顔文字: その他
+        "\U0001F900-\U0001F9FF"  # 顔文字: その他
+        "\U00002600-\U000027BF"  # 顔文字: その他
+        "\U00002B50"            # 顔文字: ↑
+        "\U00002B55"            # 顔文字: ↓
+        "\U00003030"            # 顔文字: 〰
+        "\U00003297"            # 顔文字: ㊗
+        "\U00003299"            # 顔文字: ㊙
+        "\U0001F201"            # 顔文字: →
+        "\U0001F202"            # 顔文字: ←
+        "\U0001F21A"            # 顔文字: ↩
+        "\U0001F22F"            # 顔文字: ↪
+        "\U0001F232-\U0001F23A"  # 顔文字: その他
+        "\U0001F250-\U0001F251"  # 顔文字: その他
+        "\U0001F300-\U0001F320"  # 顔文字: その他
+        "\U0001F330-\U0001F335"  # 顔文字: その他
+        "\U0001F337-\U0001F37C"  # 顔文字: その他
+        "\U0001F380-\U0001F393"  # 顔文字: その他
+        "\U0001F3A0-\U0001F3C4"  # 顔文字: その他
+        "\U0001F3C6-\U0001F3CA"  # 顔文字: その他
+        "\U0001F3E0-\U0001F3F0"  # 顔文字: その他
+        "\U0001F400-\U0001F43E"  # 顔文字: その他
+        "\U0001F440"            # 顔文字: 顔文字
+        "\U0001F442-\U0001F4F7"  # 顔文字: その他
+        "\U0001F4F9-\U0001F4FC"  # 顔文字: その他
+        "\U0001F500-\U0001F53D"  # 顔文字: その他
+        "\U0001F550-\U0001F567"  # 顔文字: その他
+        "\U0001F5FB-\U0001F5FF"  # 顔文字: その他
+        "\U0001F601-\U0001F610"  # 顔文字: 笑顔
+        "\U0001F612-\U0001F614"  # 顔文字: 笑顔
+        "\U0001F616"            # 顔文字: 笑顔
+        "\U0001F618"            # 顔文字: 笑顔
+        "\U0001F61A"            # 顔文字: 笑顔
+        "\U0001F61C-\U0001F61E"  # 顔文字: 笑顔
+        "\U0001F620-\U0001F625"  # 顔文字: 笑顔
+        "\U0001F628-\U0001F62B"  # 顔文字: 笑顔
+        "\U0001F62D"            # 顔文字: 笑顔
+        "\U0001F630-\U0001F633"  # 顔文字: 笑顔
+        "\U0001F635-\U0001F640"  # 顔文字: 笑顔
+        "\U0001F645-\U0001F64F"  # 顔文字: 笑顔
+        "\U0001F680-\U0001F6C5"  # 顔文字: 交通機関
+        "\U0001F6CC"            # 顔文字: 交通機関
+        "\U0001F6D0-\U0001F6D2"  # 顔文字: その他
+        "\U0001F6D5-\U0001F6D7"  # 顔文字: その他
+        "\U0001F6EB-\U0001F6EC"  # 顔文字: その他
+        "\U0001F6F4-\U0001F6FC"  # 顔文字: 交通機関
+        "\U0001F7E0-\U0001F7EB"  # 顔文字: その他
+        "\U0001F90C-\U0001F93A"  # 顔文字: その他
+        "\U0001F93C-\U0001F945"  # 顔文字: その他
+        "\U0001F947-\U0001F978"  # 顔文字: その他
+        "\U0001F97A-\U0001F9CB"  # 顔文字: その他
+        "\U0001F9CD-\U0001F9FF"  # 顔文字: その他
+        "\U0001FA70-\U0001FA74"  # 顔文字: その他
+        "\U0001FA78-\U0001FA7A"  # 顔文字: その他
+        "\U0001FA80-\U0001FA86"  # 顔文字: その他
+        "\U0001FA90-\U0001FAA8"  # 顔文字: その他
+        "\U0001FAB0-\U0001FAB6"  # 顔文字: その他
+        "\U0001FAC0-\U0001FAC2"  # 顔文字: その他
+        "\U0001FAD0-\U0001FAD6"  # 顔文字: その他
+        "]", 
+        flags=re.UNICODE
+    )
+    
+    # 顔文字を削除
+    return emoji_pattern.sub(' ', text)
+
+# ファイル出力時のエンコーディング処理を強化
+def write_to_file(file_path, content, is_text=False):
+    """
+    ファイルへの書き込みを安全に行う関数
+    
+    Parameters:
+    - file_path: 出力ファイルのパス
+    - content: 書き込む内容（テキストまたはJSON）
+    - is_text: Trueの場合はテキストモード、Falseの場合はJSONモード
+    """
+    try:
+        with open(file_path, 'w', encoding='utf-8') as out:
+            if is_text:
+                out.write(content)
+            else:
+                json.dump(content, out, ensure_ascii=False, indent=None)
+        return True
+    except UnicodeEncodeError:
+        # UTF-8でエンコードできない場合、置換モードで再試行
+        try:
+            with open(file_path, 'w', encoding='utf-8', errors='replace') as out:
+                if is_text:
+                    out.write(content)
+                else:
+                    json.dump(content, out, ensure_ascii=False, indent=None)
+            print(f"警告: {file_path} の書き込み時にUnicodeエンコードエラーが発生しました。一部の文字が置換されています。")
+            return True
+        except Exception as e:
+            print(f"エラー: {file_path} への書き込みに失敗しました: {e}")
+            return False
+    except Exception as e:
+        print(f"エラー: {file_path} への書き込みに失敗しました: {e}")
+        return False
 
 def main():
     if len(sys.argv) < 3:
