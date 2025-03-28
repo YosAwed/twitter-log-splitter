@@ -14,7 +14,7 @@ except ImportError:
     print("警告: chardetライブラリがインストールされていません。エンコーディング自動検出機能が制限されます。")
     print("pip install chardet でインストールすることをお勧めします。")
 
-def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024, time_format=None, text_only=False):
+def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024, time_format=None, text_only=False, group_by='month'):
     """
     Twitter投稿ログを時系列順に分割する関数
     
@@ -24,6 +24,7 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
     - max_size_bytes: 各出力ファイルの最大サイズ（バイト）
     - time_format: 日時情報のフォーマット（Noneの場合は自動検出）
     - text_only: Trueの場合、ツイートのテキストのみを抽出
+    - group_by: グループ化の単位（'month': 年月ごと、'year': 年ごと、'all': 全期間）
     """
     # 開始時間を記録
     start_time = time.time()
@@ -308,7 +309,7 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
         print(f"警告: 時系列順のソートに失敗しました: {e}")
     
     # 時間単位でグループ化
-    print("ツイートを年月ごとにグループ化中...")
+    print("ツイートを時間単位でグループ化中...")
     grouped_tweets = {}
     for i, tweet in enumerate(tweets):
         # 進捗表示（10%ごと）
@@ -321,8 +322,15 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
                 dt = parse_date(get_date_value(tweet))
             else:
                 dt = parse_date(tweet[date_key])
-            # 年月をキーとして使用
-            key = dt.strftime('%Y-%m')
+            
+            # グループ化の単位に応じてキーを生成
+            if group_by == 'month':
+                key = dt.strftime('%Y-%m')  # 年月をキーとして使用
+            elif group_by == 'year':
+                key = dt.strftime('%Y')     # 年をキーとして使用
+            else:  # 'all'
+                key = 'all_tweets'          # すべてのツイートを一つのグループに
+            
             if key not in grouped_tweets:
                 grouped_tweets[key] = []
             grouped_tweets[key].append(tweet)
@@ -422,9 +430,13 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
 
 def main():
     if len(sys.argv) < 3:
-        print(f"使用方法: {sys.argv[0]} <入力ファイル> <出力ディレクトリ> [最大ファイルサイズ(MB)] [--text-only]")
+        print(f"使用方法: {sys.argv[0]} <入力ファイル> <出力ディレクトリ> [最大ファイルサイズ(MB)] [オプション]")
         print("オプション:")
         print("  --text-only: ツイートのテキスト部分のみを抽出して保存")
+        print("  --group-by=<month|year|all>: ツイートのグループ化単位を指定")
+        print("    month: 年月ごとに分割（デフォルト）")
+        print("    year: 年ごとに分割")
+        print("    all: 全期間を一つにまとめる（ファイル数を最小化）")
         sys.exit(1)
     
     input_file = sys.argv[1]
@@ -432,12 +444,19 @@ def main():
     
     max_size_mb = 5  # デフォルト5MB
     text_only = False
+    group_by = 'month'  # デフォルトは月単位
     
     # 残りの引数を処理
     for i in range(3, len(sys.argv)):
         arg = sys.argv[i]
         if arg == "--text-only":
             text_only = True
+        elif arg.startswith("--group-by="):
+            group_option = arg.split("=")[1].lower()
+            if group_option in ['month', 'year', 'all']:
+                group_by = group_option
+            else:
+                print(f"警告: 無効なグループ化オプションです。デフォルトの {group_by} を使用します。")
         elif i == 3 and not arg.startswith("--"):  # 3番目の引数がオプションでなければサイズと解釈
             try:
                 max_size_mb = float(arg)
@@ -447,10 +466,11 @@ def main():
     max_size_bytes = int(max_size_mb * 1024 * 1024)
     
     try:
-        file_count = split_twitter_log_by_time(input_file, output_dir, max_size_bytes, text_only=text_only)
+        file_count = split_twitter_log_by_time(input_file, output_dir, max_size_bytes, text_only=text_only, group_by=group_by)
         print(f"合計 {file_count} ファイルを作成しました")
         if text_only:
             print("テキスト抽出モード: ツイートのテキスト部分のみが保存されました")
+        print(f"グループ化単位: {group_by}")
     except Exception as e:
         print(f"エラー: {e}")
         sys.exit(1)
