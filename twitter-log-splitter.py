@@ -345,236 +345,89 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
     # 各時間グループをファイルサイズ制限に従って分割
     file_count = 1
     total_processed = 0
-    
     print("ファイル分割処理を開始...")
-    
-    # テキストモードで「all」グループ化の場合は、ツイート数ベースで分割
-    if text_only and group_by == 'all' and 'all_tweets' in grouped_tweets:
-        all_tweets = grouped_tweets['all_tweets']
-        print(f"期間 all_tweets の処理中... ({len(all_tweets)} ツイート)")
-        
-        # テキストを抽出して一つのリストに格納
-        all_text_content = []
-        for i, tweet in enumerate(all_tweets):
-            # 進捗表示（10%ごと）
-            if i % max(1, len(all_tweets) // 10) == 0:
-                print(f"進捗: {i}/{len(all_tweets)} テキスト抽出中... ({i/len(all_tweets)*100:.1f}%)")
-            
-            # ツイートデータを取得
-            tweet_data = tweet
-            # {"tweet": {...}} 形式の場合、tweet内のデータを使用
-            if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
-                tweet_data = tweet['tweet']
-            
-            # full_textフィールドを優先的に使用し、なければtextフィールドを使用
-            text_content = None
-            if 'full_text' in tweet_data:
-                text_content = tweet_data['full_text']
-            elif 'text' in tweet_data:
-                text_content = tweet_data['text']
-            
-            if text_content:
-                try:
-                    # Unicode正規化を追加
-                    text_content = unicodedata.normalize('NFKC', text_content)
-                    # 改行文字をスペースに置換し、連続するスペースを削除
-                    text_content = text_content.replace('\n', ' ').replace('\r', ' ')
-                    text_content = ' '.join(text_content.split())
-                    # 制御文字を削除（一部の制御文字はファイル書き込みで問題を起こす可能性がある）
-                    text_content = ''.join(ch for ch in text_content if unicodedata.category(ch)[0] != 'C' or ch in (' ', '\t', '\n'))
-                    # 絵文字を削除
-                    text_content = remove_emojis(text_content)
-                    all_text_content.append(text_content)
-                except Exception as e:
-                    print(f"警告: テキスト処理中にエラーが発生: {e}")
-        
-        # 一つのファイルに格納するツイート数（ファイル数を減らすため大きな値に設定）
-        tweets_per_file = 10000
-        
-        # ツイートを分割してファイルに保存
-        for i in range(0, len(all_text_content), tweets_per_file):
-            # 現在のバッチを取得
-            batch = all_text_content[i:i+tweets_per_file]
-            
-            # ファイル名の生成
-            output_filename = f"all_tweets_part_{file_count}.txt"
-            output_path = os.path.join(output_dir, output_filename)
-            
-            # 同名ファイルが存在する場合、数字を付加して重複を避ける
-            counter = 1
-            while os.path.exists(output_path):
-                output_filename = f"all_tweets_part_{file_count}_{counter}.txt"
-                output_path = os.path.join(output_dir, output_filename)
-                counter += 1
-            
-            # テキストを結合して一度に書き込み
-            combined_text = '\n'.join(batch)
-            write_success = write_to_file(output_path, combined_text + '\n', is_text=True)
-            if not write_success:
-                print(f"警告: {output_path} への書き込みに失敗しました")
-            
-            actual_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-            print(f"all_tweets パート {file_count} 作成: {len(batch)} 投稿, {actual_size/1024/1024:.2f} MB")
-            
-            total_processed += len(batch)
-            file_count += 1
-        
-        # 処理時間を計算
-        end_time = time.time()
-        elapsed_time = end_time - start_time
-        
-        print(f"処理完了: {len(all_tweets)} ツイートを処理しました (処理時間: {elapsed_time:.2f}秒)")
-        return file_count - 1
-    
+
     # 通常の処理（テキストモードでallグループ化以外の場合）
     for period, period_tweets in sorted(grouped_tweets.items()):
         print(f"期間 {period} の処理中... ({len(period_tweets)} ツイート)")
         current_batch = []
-        current_size = 2  # '[]' の初期サイズ
-        
-        # 最適化: バッチ全体のJSONサイズを一度に計算
-        for i, tweet in enumerate(period_tweets):
-            # 投稿のサイズを計算（メモリ効率のため文字列に変換せずにサイズを推定）
-            # 完全な精度は必要ないため、オブジェクトの大きさを推定
-            tweet_size = sys.getsizeof(str(tweet)) * 1.1  # 10%のバッファを追加
-            
-            # サイズ超過チェック
-            if current_size + tweet_size + 1 > max_size_bytes and current_batch:
-                # 現在のバッチを保存
-                # ファイル名の生成とファイル存在確認
-                output_filename = f"{period}_part_{file_count}.txt"
-                output_path = os.path.join(output_dir, output_filename)
-                
-                # 同名ファイルが存在する場合、数字を付加して重複を避ける
-                counter = 1
-                while os.path.exists(output_path):
-                    output_filename = f"{period}_part_{file_count}_{counter}.txt"
-                    output_path = os.path.join(output_dir, output_filename)
-                    counter += 1
-                
+        file_count_in_period = 1
+        i = 0
+        while i < len(period_tweets):
+            current_batch = []
+            current_size = 2  # '[]' の初期サイズ
+            while i < len(period_tweets):
+                tweet = period_tweets[i]
+                # バッチにツイートを追加してシリアライズ後のサイズを計算
+                temp_batch = current_batch + [tweet]
                 if text_only:
-                    # テキストモードでの保存処理
+                    # テキスト抽出モード
                     all_text_content = []
-                    for tweet in current_batch:
-                        # ツイートデータを取得
-                        tweet_data = tweet
-                        # {"tweet": {...}} 形式の場合、tweet内のデータを使用
-                        if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
-                            tweet_data = tweet['tweet']
-                        
-                        # full_textフィールドを優先的に使用し、なければtextフィールドを使用
-                        text_content = None
-                        if 'full_text' in tweet_data:
-                            text_content = tweet_data['full_text']
-                        elif 'text' in tweet_data:
-                            text_content = tweet_data['text']
-                        
+                    for t in temp_batch:
+                        tweet_data = t
+                        if 'tweet' in t and isinstance(t['tweet'], dict):
+                            tweet_data = t['tweet']
+                        text_content = tweet_data.get('full_text') or tweet_data.get('text')
                         if text_content:
-                            try:
-                                # Unicode正規化を追加
-                                text_content = unicodedata.normalize('NFKC', text_content)
-                                # 改行文字をスペースに置換し、連続するスペースを削除
-                                text_content = text_content.replace('\n', ' ').replace('\r', ' ')
-                                text_content = ' '.join(text_content.split())
-                                # 制御文字を削除（一部の制御文字はファイル書き込みで問題を起こす可能性がある）
-                                text_content = ''.join(ch for ch in text_content if unicodedata.category(ch)[0] != 'C' or ch in (' ', '\t', '\n'))
-                                # 顔文字を削除
-                                text_content = remove_emojis(text_content)
-                                all_text_content.append(text_content)
-                            except Exception as e:
-                                print(f"警告: テキスト処理中にエラーが発生: {e}")
-                    
-                    # 全テキストを結合して一度に書き込み
-                    combined_text = '\n'.join(all_text_content)
-                    write_success = write_to_file(output_path, combined_text + '\n', is_text=True)
-                    if not write_success:
-                        print(f"警告: {output_path} への書き込みに失敗しました")
-                else:
-                    # JSONモードでの保存処理
-                    write_success = write_to_file(output_path, current_batch, is_text=False)
-                    if not write_success:
-                        print(f"警告: {output_path} への書き込みに失敗しました")
-                
-                actual_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-                print(f"{period} パート {file_count} 作成: {len(current_batch)} 投稿, {actual_size/1024/1024:.2f} MB")
-                
-                total_processed += len(current_batch)
-                current_batch = []
-                current_size = 2
-                file_count += 1
-            
-            # 投稿を追加
-            if current_batch:
-                current_size += 1  # カンマのサイズ
-            current_batch.append(tweet)
-            current_size += tweet_size
-        
-        # 残りの投稿を保存
-        if current_batch:
-            # ファイル名の生成とファイル存在確認
-            output_filename = f"{period}_part_{file_count}.txt"
-            output_path = os.path.join(output_dir, output_filename)
-            
-            # 同名ファイルが存在する場合、数字を付加して重複を避ける
-            counter = 1
-            while os.path.exists(output_path):
-                output_filename = f"{period}_part_{file_count}_{counter}.txt"
-                output_path = os.path.join(output_dir, output_filename)
-                counter += 1
-            
-            if text_only:
-                # テキストモードでの保存処理
-                all_text_content = []
-                for tweet in current_batch:
-                    # ツイートデータを取得
-                    tweet_data = tweet
-                    # {"tweet": {...}} 形式の場合、tweet内のデータを使用
-                    if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
-                        tweet_data = tweet['tweet']
-                    
-                    # full_textフィールドを優先的に使用し、なければtextフィールドを使用
-                    text_content = None
-                    if 'full_text' in tweet_data:
-                        text_content = tweet_data['full_text']
-                    elif 'text' in tweet_data:
-                        text_content = tweet_data['text']
-                    
-                    if text_content:
-                        try:
-                            # Unicode正規化を追加
                             text_content = unicodedata.normalize('NFKC', text_content)
-                            # 改行文字をスペースに置換し、連続するスペースを削除
                             text_content = text_content.replace('\n', ' ').replace('\r', ' ')
                             text_content = ' '.join(text_content.split())
-                            # 制御文字を削除（一部の制御文字はファイル書き込みで問題を起こす可能性がある）
                             text_content = ''.join(ch for ch in text_content if unicodedata.category(ch)[0] != 'C' or ch in (' ', '\t', '\n'))
-                            # 顔文字を削除
                             text_content = remove_emojis(text_content)
                             all_text_content.append(text_content)
-                        except Exception as e:
-                            print(f"警告: テキスト処理中にエラーが発生: {e}")
-                
-                # 全テキストを結合して一度に書き込み
-                combined_text = '\n'.join(all_text_content)
-                write_success = write_to_file(output_path, combined_text + '\n', is_text=True)
+                    combined_text = '\n'.join(all_text_content) + '\n'
+                    batch_bytes = len(combined_text.encode('utf-8'))
+                else:
+                    # JSONモード
+                    try:
+                        batch_bytes = len(json.dumps(temp_batch, ensure_ascii=False, separators=(",", ":")).encode('utf-8'))
+                    except Exception:
+                        batch_bytes = sys.getsizeof(str(temp_batch))
+                if batch_bytes > max_size_bytes and current_batch:
+                    break  # 直前のバッチで出力
+                current_batch.append(tweet)
+                i += 1
+            if not current_batch:
+                # 1ツイートだけでサイズ超過する場合は強制的に1件で出力
+                current_batch = [period_tweets[i]]
+                i += 1
+            output_filename = f"{period}_part_{file_count_in_period}.txt"
+            output_path = os.path.join(output_dir, output_filename)
+            counter = 1
+            while os.path.exists(output_path):
+                output_filename = f"{period}_part_{file_count_in_period}_{counter}.txt"
+                output_path = os.path.join(output_dir, output_filename)
+                counter += 1
+            if text_only:
+                all_text_content = []
+                for tweet in current_batch:
+                    tweet_data = tweet
+                    if 'tweet' in tweet and isinstance(tweet['tweet'], dict):
+                        tweet_data = tweet['tweet']
+                    text_content = tweet_data.get('full_text') or tweet_data.get('text')
+                    if text_content:
+                        text_content = unicodedata.normalize('NFKC', text_content)
+                        text_content = text_content.replace('\n', ' ').replace('\r', ' ')
+                        text_content = ' '.join(text_content.split())
+                        text_content = ''.join(ch for ch in text_content if unicodedata.category(ch)[0] != 'C' or ch in (' ', '\t', '\n'))
+                        text_content = remove_emojis(text_content)
+                        all_text_content.append(text_content)
+                combined_text = '\n'.join(all_text_content) + '\n'
+                write_success = write_to_file(output_path, combined_text, is_text=True)
                 if not write_success:
                     print(f"警告: {output_path} への書き込みに失敗しました")
             else:
-                # JSONモードでの保存処理
                 write_success = write_to_file(output_path, current_batch, is_text=False)
                 if not write_success:
                     print(f"警告: {output_path} への書き込みに失敗しました")
-            
             actual_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-            print(f"{period} パート {file_count} 作成: {len(current_batch)} 投稿, {actual_size/1024/1024:.2f} MB")
-            
+            print(f"{period} パート {file_count_in_period} 作成: {len(current_batch)} 投稿, {actual_size/1024/1024:.2f} MB")
             total_processed += len(current_batch)
-            file_count += 1
-    
+            file_count_in_period += 1
+        file_count += file_count_in_period - 1
     # 処理時間を計算
     end_time = time.time()
     elapsed_time = end_time - start_time
-    
     print(f"処理完了: {len(tweets)} ツイートを処理しました (処理時間: {elapsed_time:.2f}秒)")
     return file_count - 1
 
