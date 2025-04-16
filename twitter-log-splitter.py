@@ -5,7 +5,17 @@ import re
 from datetime import datetime
 import time
 import unicodedata  # Unicode正規化のためのモジュールを追加
-from tqdm import tqdm
+# tqdmライブラリがインストールされているか確認し、なければ警告を表示
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    print("警告: tqdmライブラリがインストールされていません。進捗表示機能が制限されます。")
+    print("pip install tqdm でインストールすることをお勧めします。")
+    # ダミーのtqdm（進捗バーなしでイテレータをそのまま返す）
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
 
 # chardetライブラリがインストールされているか確認し、なければ警告を表示
 try:
@@ -392,12 +402,7 @@ def split_twitter_log_by_time(input_file, output_dir, max_size_bytes=5*1024*1024
                     current_batch = [period_tweets[i]]
                     i += 1
                 output_filename = f"{period}_part_{file_count_in_period}.txt"
-                output_path = os.path.join(output_dir, output_filename)
-                counter = 1
-                while os.path.exists(output_path):
-                    output_filename = f"{period}_part_{file_count_in_period}_{counter}.txt"
-                    output_path = os.path.join(output_dir, output_filename)
-                    counter += 1
+                output_path = get_unique_filename(os.path.join(output_dir, output_filename))
                 if text_only:
                     all_text_content = []
                     for tweet in current_batch:
@@ -532,6 +537,20 @@ def remove_emojis(text):
     
     # 顔文字を削除
     return emoji_pattern.sub(' ', text)
+
+# ファイル名重複回避用のユーティリティ関数
+
+def get_unique_filename(file_path):
+    """
+    指定ファイルパスが既に存在する場合、連番を付与して新しいファイル名を返す
+    """
+    base, ext = os.path.splitext(file_path)
+    counter = 1
+    new_path = file_path
+    while os.path.exists(new_path):
+        new_path = f"{base}_{counter}{ext}"
+        counter += 1
+    return new_path
 
 # ファイル出力時のエンコーディング処理を強化
 def write_to_file(file_path, content, is_text=False):
